@@ -1,4 +1,8 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "6"
+# ///
 # MAGIC %md
 # MAGIC # 01 - Raw to Bronze (fixed)
 # MAGIC Bronze = append-only audit log of exactly what the API returned. Duplicates are expected here;
