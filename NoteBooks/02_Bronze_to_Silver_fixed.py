@@ -1,4 +1,8 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "6"
+# ///
 # MAGIC %md
 # MAGIC # 02 - Bronze to Silver (fixed)
 # MAGIC Cleansing, modeling and idempotent upsert into Silver. Primary key: (city, reading_time).
