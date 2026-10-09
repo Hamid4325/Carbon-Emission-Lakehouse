@@ -1,17 +1,25 @@
 import json
 import os
 import time
+from collections import defaultdict
 from datetime import date, timedelta
+
 import requests
 
 BASE_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
 HOURLY_VARS = "carbon_monoxide,carbon_dioxide,pm2_5,pm10,nitrogen_dioxide"
 
-# UPDATED: Pointing directly to your Databricks Staging/Raw Volume!
-OUT_DIR = "/Volumes/workspace/default/staging/raw"
+# Staging layout:
+#   new/        files fetched but NOT yet processed into Bronze
+#   processed/  files already loaded into Bronze (moved here by the Bronze step)
+STAGING_ROOT = "/Volumes/workspace/default/staging"
+NEW_DIR = f"{STAGING_ROOT}/new"
+PROCESSED_DIR = f"{STAGING_ROOT}/processed"
+spark.sql("CREATE VOLUME IF NOT EXISTS workspace.default.staging")
+dbutils.fs.mkdirs(NEW_DIR)
+dbutils.fs.mkdirs(PROCESSED_DIR)
 
-# Ensure the directory exists (works natively in Databricks Unity Catalog)
-os.makedirs(OUT_DIR, exist_ok=True)
+REQUEST_DELAY_SEC = 2   # pause between cities to avoid HTTP 429
 
 CITIES = {
     # South Asia
@@ -75,65 +83,118 @@ CITIES = {
     "Auckland": (-36.8485, 174.7633),
 }
 
-def fetch_incremental_load(start_date: date, end_date: date):
-    records = []
-    total = len(CITIES)
-    
-    print(f"--- Starting Incremental Fetch: {start_date} to {end_date} ---")
-    
-    for i, (city, (lat, lon)) in enumerate(CITIES.items(), start=1):
-        print(f"[{i}/{total}] Fetching data for {city}...")
-        
-        params = {
-            "latitude": lat,
-            "longitude": lon,
-            "hourly": HOURLY_VARS,
-            "timezone": "auto",
-            "start_date": start_date.isoformat(),
-            "end_date": end_date.isoformat(),
+def fetch_city_window(lat, lon, start_date, end_date, retries=3):
+    """One API call covering the whole window for one city. Retries on 429."""
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "hourly": HOURLY_VARS,
+        "timezone": "auto",
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+    }
+    for attempt in range(1, retries + 1):
+        r = requests.get(BASE_URL, params=params, timeout=60)
+        if r.status_code == 429 and attempt < retries:
+            wait = REQUEST_DELAY_SEC * (2 ** attempt)
+            print(f"  429 rate limit, waiting {wait}s (attempt {attempt}/{retries})")
+            time.sleep(wait)
+            continue
+        r.raise_for_status()
+        return r.json()
+
+
+def split_by_day(payload, city, day_strs):
+    """Slices one multi-day API response into {'YYYY-MM-DD': single-day payload}."""
+    idx_by_day = defaultdict(list)
+    for i, t in enumerate(payload["hourly"]["time"]):
+        idx_by_day[t[:10]].append(i)          # "2026-10-05T14:00" -> "2026-10-05"
+
+    out = {}
+    for d in day_strs:
+        idxs = idx_by_day.get(d)
+        if not idxs:
+            continue
+        day_payload = {k: v for k, v in payload.items() if k != "hourly"}
+        day_payload["hourly"] = {
+            field: [values[i] for i in idxs]
+            for field, values in payload["hourly"].items()
         }
-        
+        day_payload["city"] = city
+        day_payload["source_system"] = "open-meteo-air-quality-api"
+        out[d] = day_payload
+    return out
+
+
+def fetch_incremental_load(window_days=1, start_date=None):
+    """
+    window_days=1, start_date=None      -> yesterday only        (1 file)
+    window_days=5, start_date=None      -> the 5 days ending yesterday (5 files)
+    window_days=5, start_date="2026-10-01" -> Oct 1..Oct 5       (5 files)
+
+    Writes one file per day, incremental_YYYY-MM-DD.json, into staging/new.
+    Each file holds all cities for that single day.
+    """
+    if window_days < 1:
+        raise ValueError("window_days must be >= 1")
+
+    yesterday = date.today() - timedelta(days=1)
+    if start_date is None:
+        start_date = yesterday - timedelta(days=window_days - 1)
+    elif isinstance(start_date, str):
+        start_date = date.fromisoformat(start_date)
+
+    all_days = [start_date + timedelta(days=i) for i in range(window_days)]
+    days = [d for d in all_days if d <= yesterday]      # never fetch today/future
+    for d in all_days:
+        if d > yesterday:
+            print(f"Skipping {d}: not a complete past day yet")
+    if not days:
+        print("Nothing to fetch.")
+        return []
+
+    day_strs = [d.isoformat() for d in days]
+    print(f"--- Incremental fetch: {day_strs[0]} to {day_strs[-1]} ({len(days)} day file(s)) ---")
+
+    per_day = {d: [] for d in day_strs}
+    failed_cities = []
+    total = len(CITIES)
+
+    for i, (city, (lat, lon)) in enumerate(CITIES.items(), start=1):
+        print(f"[{i}/{total}] {city}")
         try:
-            r = requests.get(BASE_URL, params=params, timeout=60)
-            r.raise_for_status()
-            
-            city_data = r.json()
-            city_data["city"] = city
-            city_data["source_system"] = "open-meteo-air-quality-api"
-            
-            records.append(city_data)
+            payload = fetch_city_window(lat, lon, days[0], days[-1])
+            for d, day_payload in split_by_day(payload, city, day_strs).items():
+                per_day[d].append(day_payload)
         except Exception as e:
             print(f"  FAILED for {city}: {e}")
-            
-        # RATE LIMITING: Sleep for 2 seconds to prevent HTTP 429 Too Many Requests
-        time.sleep(2) 
+            failed_cities.append(city)
+        time.sleep(REQUEST_DELAY_SEC)
 
-    # Dynamically name the file based on the dates fetched
-    file_name = f"incremental_{start_date.isoformat()}_to_{end_date.isoformat()}.json"
-    out_path = f"{OUT_DIR}/{file_name}"
-    
-    # Writing directly to Unity Catalog Volume
-    with open(out_path, "w") as f:
-        json.dump(records, f, indent=2)
+    written = []
+    for d, records in per_day.items():
+        if not records:
+            print(f"No data returned for {d}, no file written.")
+            continue
+        out_path = f"{NEW_DIR}/incremental_{d}.json"
+        with open(out_path, "w") as f:
+            json.dump(records, f, indent=2)
+        hours = sum(len(r["hourly"]["time"]) for r in records)
+        print(f"Wrote {out_path}  ({len(records)}/{total} cities, {hours} hourly readings)")
+        written.append(out_path)
 
-    total_hours = sum(len(r["hourly"]["time"]) for r in records if "hourly" in r)
-    print(f"\n--- Fetch Complete ---")
-    print(f"Saved file directly to Data Lake: {out_path}")
-    print(f"Successfully processed {len(records)}/{total} cities ({total_hours} hourly readings)")
+    if failed_cities:
+        print(f"\nCities that failed (re-run to retry): {failed_cities}")
+    return written
 
 
-# ==========================================
-# CONFIGURATION: How many days back do you want?
-# ==========================================
-days_back = 2  # <--- Change this to pull 2 days, 5 days, etc.
+WINDOW_DAYS = 9      # 1 = yesterday only; 5 = five daily files
+START_DATE = None    # None = window ends yesterday; or e.g. "2026-10-01" to start there
 
-# Calculate dates automatically
-end_date = date.today() - timedelta(days=1) # Always ends yesterday
-start_date = end_date - timedelta(days=(days_back - 1))
+fetch_incremental_load(window_days=WINDOW_DAYS, start_date=START_DATE)
 
-# Run the fetch!
-fetch_incremental_load(start_date, end_date)
-
-# Optional: Display the contents of your raw folder to prove it saved correctly!
-print("\n--- Contents of your /raw/ folder ---")
-display(dbutils.fs.ls(OUT_DIR))
+print("\n--- Contents of staging/new ---")
+try:
+    display(dbutils.fs.ls(NEW_DIR))
+except NameError:
+    print(sorted(os.listdir(NEW_DIR)))
