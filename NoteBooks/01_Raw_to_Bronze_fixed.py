@@ -211,3 +211,29 @@ source_data_parameter = f"{raw_folder_path}/full_load_last_3_years.json"
 ingest_raw_to_bronze(source_data_parameter, bronze_delta_path, log_table_path)
 
 display(spark.read.format("delta").load(log_table_path).orderBy(F.col("start_time").desc()))
+
+# COMMAND ----------
+
+# ==========================================
+# 00_Setup_Infrastructure.py
+# Run this once to organize your Volume
+# ==========================================
+
+# 1. Define your base Volume path
+# (Replace with your actual catalog, schema, and volume names)
+base_volume_path = "/Volumes/YOUR_CATALOG/YOUR_SCHEMA/YOUR_VOLUME"
+
+# 2. Define the new folder paths
+raw_folder = f"{base_volume_path}/raw"
+processed_folder = f"{base_volume_path}/processed"
+
+# 3. Create the folders using dbutils
+print("Creating directories...")
+dbutils.fs.mkdirs(raw_folder)
+dbutils.fs.mkdirs(processed_folder)
+
+# 4. Verify they were created
+print("\n--- Volume Contents ---")
+display(dbutils.fs.ls(base_volume_path))
+
+print("\nSuccess! Your 'raw' and 'processed' folders are ready.")

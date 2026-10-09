@@ -1,4 +1,8 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "6"
+# ///
 # MAGIC %md
 # MAGIC # 00 - Fetch last 3 years of air-quality data -> raw JSON for Bronze
 # MAGIC Writes `/Volumes/workspace/default/bronze/full_load_last_3_years.json`
