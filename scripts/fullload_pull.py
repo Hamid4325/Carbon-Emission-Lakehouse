@@ -19,7 +19,7 @@ import requests
 
 BASE_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
 HOURLY_VARS = "carbon_monoxide,carbon_dioxide,pm2_5,pm10,nitrogen_dioxide"
-OUT_DIR = "sample_data"
+OUT_DIR = "/Volumes/workspace/default/bronze"
 os.makedirs(OUT_DIR, exist_ok=True)
 
 # 100 globally-distributed cities (lat, lon), spanning every populated
@@ -141,7 +141,7 @@ def build_full_load_3_years():
             records.append(fetch_city_full_history(city, lat, lon, years_back=3))
         except Exception as e:
             print(f"  FAILED for {city}: {e} -- skipping, re-run later for just this city")
-        time.sleep(0.3)  # be polite to the free API across ~300 calls
+        time.sleep(10)  # be polite to the free API across ~300 calls
 
     out_path = f"{OUT_DIR}/full_load_last_3_years.json"
     with open(out_path, "w") as f:
