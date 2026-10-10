@@ -19,8 +19,8 @@ import requests
 
 BASE_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
 HOURLY_VARS = "carbon_monoxide,carbon_dioxide,pm2_5,pm10,nitrogen_dioxide"
-OUT_DIR = "/Volumes/workspace/default/bronze"
-os.makedirs(OUT_DIR, exist_ok=True)
+OUT_DIR = "/Volumes/workspace/default/staging/processed"
+# os.makedirs(OUT_DIR, exist_ok=True)
 
 # 100 globally-distributed cities (lat, lon), spanning every populated
 # continent and a deliberate mix of high- and low-pollution regions --
