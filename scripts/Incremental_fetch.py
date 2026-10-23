@@ -188,7 +188,7 @@ def fetch_incremental_load(window_days=1, start_date=None):
     return written
 
 
-WINDOW_DAYS = 9      # 1 = yesterday only; 5 = five daily files
+WINDOW_DAYS = 7      # 1 = yesterday only; 5 = five daily files
 START_DATE = None    # None = window ends yesterday; or e.g. "2026-10-01" to start there
 
 fetch_incremental_load(window_days=WINDOW_DAYS, start_date=START_DATE)
